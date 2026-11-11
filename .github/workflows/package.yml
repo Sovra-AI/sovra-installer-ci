@@ -123,10 +123,10 @@ jobs:
             fi
             cp -v "$found" "upload/$dest"
           }
-          pick SovraHarness.pkg 'SovraHarness.pkg' '*.pkg'
-          pick SovraHarness-Setup.exe 'SovraHarness-Setup.exe' '*Setup*.exe'
+          pick SovraHarness-osx.pkg 'SovraHarness-osx.pkg' 'SovraHarness.pkg' '*.pkg'
+          pick SovraHarness-win-Setup.exe 'SovraHarness-win-Setup.exe' '*Setup*.exe'
           ls -lah upload
           # AppImage already published from the local Linux pack; upload macOS + Windows.
-          gh release upload "$TAG" upload/SovraHarness.pkg upload/SovraHarness-Setup.exe \
+          gh release upload "$TAG" upload/SovraHarness-osx.pkg upload/SovraHarness-win-Setup.exe \
             --repo Sovra-AI/SovraHarness --clobber
           gh release view "$TAG" --repo Sovra-AI/SovraHarness --json assets --jq '.assets[]|{name,size}'
