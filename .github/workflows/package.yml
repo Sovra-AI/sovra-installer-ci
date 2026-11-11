@@ -1,0 +1,129 @@
+# Public CI: package SovraHarness Velopack installers on free GitHub-hosted runners.
+# Source stays in private Sovra-AI/SovraHarness; this repo only holds the workflow.
+# Signing secrets are optional — unsigned installers are still uploaded.
+name: Package installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: SovraHarness git tag to package
+        required: true
+        default: v0.2.0
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  PACK_ID: SovraHarness
+  SOURCE_REPO: Sovra-AI/SovraHarness
+
+jobs:
+  package:
+    name: Package (${{ matrix.channel }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15, channel: osx, exe: sovra }
+          - { os: windows-latest, channel: win, exe: sovra.exe }
+          - { os: ubuntu-24.04, channel: linux, exe: sovra }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - name: Checkout SovraHarness
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ inputs.tag }}
+          token: ${{ secrets.SOVRA_BUILD_TOKEN }}
+          persist-credentials: false
+
+      - if: runner.os == 'Linux'
+        run: ./scripts/install-linux-deps.sh
+
+      - run: rustup show
+
+      - uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c # v2.9.3
+        with:
+          workspaces: ". -> target"
+
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: "8.0.x"
+
+      - run: dotnet tool install -g vpk --version 1.2.161
+
+      - name: Build
+        shell: bash
+        run: |
+          cargo build --release --locked --package sovra-app
+          mkdir -p target/pack
+          cp "target/release/${{ matrix.exe }}" target/pack/
+
+      - name: Package with Velopack
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag }}"
+          VERSION="${TAG#v}"
+          ARGS=(pack --packId "$PACK_ID" --packVersion "$VERSION" --packDir target/pack
+                --mainExe "${{ matrix.exe }}" --channel "${{ matrix.channel }}"
+                --outputDir target/dist --skip-updates)
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            ARGS+=(--bundleId com.sovra.harness --signEntitlements packaging/macos/sovra.entitlements)
+            [[ -f packaging/macos/icon.icns ]] && ARGS+=(--icon packaging/macos/icon.icns)
+          fi
+          vpk "${ARGS[@]}"
+          echo "Dist contents:"
+          find target/dist -type f -printf '%p %s\n' || find target/dist -type f
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-${{ matrix.channel }}
+          path: target/dist
+          if-no-files-found: error
+
+  publish:
+    name: Upload to SovraHarness release
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+
+      - name: Collect installers and upload
+        env:
+          GH_TOKEN: ${{ secrets.SOVRA_BUILD_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p upload
+          # Prefer canonical Velopack names; fall back to the sole nonempty installer per ext.
+          pick() {
+            local dest="$1"
+            shift
+            local found="" pat
+            for pat in "$@"; do
+              found=$(find dist -type f -name "$pat" 2>/dev/null | while read -r f; do
+                [[ -s "$f" ]] && echo "$f"
+              done | head -1 || true)
+              [[ -n "$found" ]] && break
+            done
+            if [[ -z "$found" || ! -s "$found" ]]; then
+              echo "Missing installer for $dest (patterns: $*)" >&2
+              find dist -type f -printf '%p %s\n' >&2 || find dist -type f >&2
+              exit 1
+            fi
+            cp -v "$found" "upload/$dest"
+          }
+          pick SovraHarness.pkg 'SovraHarness.pkg' '*.pkg'
+          pick SovraHarness-Setup.exe 'SovraHarness-Setup.exe' '*Setup*.exe' 'SovraHarness*.exe'
+          pick SovraHarness.AppImage 'SovraHarness.AppImage' '*.AppImage'
+          ls -lah upload
+          gh release upload "$TAG" upload/SovraHarness.pkg upload/SovraHarness-Setup.exe upload/SovraHarness.AppImage \
+            --repo Sovra-AI/SovraHarness --clobber
+          gh release view "$TAG" --repo Sovra-AI/SovraHarness --json assets --jq '.assets[]|{name,size}'
