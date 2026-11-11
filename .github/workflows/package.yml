@@ -17,6 +17,7 @@ permissions:
 env:
   CARGO_INCREMENTAL: 0
   CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "2"
   PACK_ID: SovraHarness
   SOURCE_REPO: Sovra-AI/SovraHarness
 
@@ -27,11 +28,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux AppImage is already on the SovraHarness release from a local pack;
+          # free ubuntu runners often OOM on this workspace, so CI focuses on osx/win.
           - { os: macos-15, channel: osx, exe: sovra }
           - { os: windows-latest, channel: win, exe: sovra.exe }
-          - { os: ubuntu-24.04, channel: linux, exe: sovra }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - name: Checkout SovraHarness
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -88,12 +90,14 @@ jobs:
   publish:
     name: Upload to SovraHarness release
     needs: package
+    if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
+          merge-multiple: true
 
       - name: Collect installers and upload
         env:
@@ -102,7 +106,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p upload
-          # Prefer canonical Velopack names; fall back to the sole nonempty installer per ext.
+          find dist -type f -printf '%p %s\n' || find dist -type f
           pick() {
             local dest="$1"
             shift
@@ -115,15 +119,14 @@ jobs:
             done
             if [[ -z "$found" || ! -s "$found" ]]; then
               echo "Missing installer for $dest (patterns: $*)" >&2
-              find dist -type f -printf '%p %s\n' >&2 || find dist -type f >&2
               exit 1
             fi
             cp -v "$found" "upload/$dest"
           }
           pick SovraHarness.pkg 'SovraHarness.pkg' '*.pkg'
-          pick SovraHarness-Setup.exe 'SovraHarness-Setup.exe' '*Setup*.exe' 'SovraHarness*.exe'
-          pick SovraHarness.AppImage 'SovraHarness.AppImage' '*.AppImage'
+          pick SovraHarness-Setup.exe 'SovraHarness-Setup.exe' '*Setup*.exe'
           ls -lah upload
-          gh release upload "$TAG" upload/SovraHarness.pkg upload/SovraHarness-Setup.exe upload/SovraHarness.AppImage \
+          # AppImage already published from the local Linux pack; upload macOS + Windows.
+          gh release upload "$TAG" upload/SovraHarness.pkg upload/SovraHarness-Setup.exe \
             --repo Sovra-AI/SovraHarness --clobber
           gh release view "$TAG" --repo Sovra-AI/SovraHarness --json assets --jq '.assets[]|{name,size}'
