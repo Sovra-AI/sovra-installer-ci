@@ -1,0 +1,93 @@
+# Copies the newest SovraHarness release's installers into this public repo so
+# the download site (which links to .../releases/latest/download/...) always
+# serves the latest build. SovraHarness is private, so anonymous visitors cannot
+# download from it directly; this repo is the public mirror.
+#
+# Runs on a schedule and on demand. A version already mirrored is skipped, and a
+# SovraHarness release that does not yet have all three installers is skipped
+# until it does.
+name: Mirror latest release
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: SovraHarness tag to mirror (blank = newest release)
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Mirror installers
+        env:
+          SOURCE_REPO: Sovra-AI/SovraHarness
+          SOURCE_TOKEN: ${{ secrets.SOVRA_BUILD_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          src() { GH_TOKEN="$SOURCE_TOKEN" gh "$@"; }
+
+          tag="${INPUT_TAG:-}"
+          if [[ -z "$tag" ]]; then
+            tag=$(src release view --repo "$SOURCE_REPO" --json tagName --jq .tagName)
+          fi
+          echo "Source release: $tag"
+
+          # Site asset name  <-  source asset name
+          declare -A wanted=(
+            [SovraHarness-osx-Setup.pkg]=SovraHarness-osx-Setup.pkg
+            [SovraHarness-win-Setup.exe]=SovraHarness-win-Setup.exe
+            [SovraHarness.AppImage]=SovraHarness.AppImage
+          )
+
+          src_assets=$(src release view "$tag" --repo "$SOURCE_REPO" --json assets --jq '.assets[].name')
+          for name in "${wanted[@]}"; do
+            if ! grep -qx "$name" <<< "$src_assets"; then
+              echo "$tag does not have $name yet; nothing to mirror."
+              exit 0
+            fi
+          done
+
+          if mine=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null); then
+            complete=1
+            for site_name in "${!wanted[@]}"; do
+              grep -qx "$site_name" <<< "$mine" || complete=0
+            done
+            if [[ "$complete" == "1" ]]; then
+              echo "$tag is already mirrored."
+              exit 0
+            fi
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+              --title "SovraHarness $tag installers" \
+              --notes "Installers for SovraHarness $tag (macOS, Windows, Linux)." \
+              --draft
+          fi
+
+          mkdir -p dl
+          for site_name in "${!wanted[@]}"; do
+            src release download "$tag" --repo "$SOURCE_REPO" --pattern "${wanted[$site_name]}" --dir dl --clobber
+            if [[ "$site_name" != "${wanted[$site_name]}" ]]; then
+              mv "dl/${wanted[$site_name]}" "dl/$site_name"
+            fi
+          done
+          ls -la dl
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber dl/*
+
+          # Publish and mark latest only once all three are attached, so the
+          # site never points at a half-uploaded release.
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[]|{name,size}'
