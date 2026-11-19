@@ -1,11 +1,16 @@
 # sovra-installer-ci
 
 Public GitHub Actions workflows that build Velopack installers for
-**SovraHarness** (private) on macOS, Windows, and Linux runners.
+**SovraHarness** on macOS, Windows, and Linux runners.
 
 Source never lives in this repository. Jobs check out `Sovra-AI/SovraHarness`
 with `SOVRA_BUILD_TOKEN` and upload `.pkg` / Setup `.exe` / `.AppImage` to that
 repo’s GitHub Release.
+
+The download site uses this repository's latest release. **Mirror latest release**
+checks the public SovraHarness releases twice an hour. It publishes a draft after
+all three installers are uploaded and resumes interrupted drafts on the next run.
+It reads releases with the workflow's own GitHub token.
 
 ## Run
 

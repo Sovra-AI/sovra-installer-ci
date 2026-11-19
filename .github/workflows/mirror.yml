@@ -1,7 +1,6 @@
 # Copies the newest SovraHarness release's installers into this public repo so
 # the download site (which links to .../releases/latest/download/...) always
-# serves the latest build. SovraHarness is private, so anonymous visitors cannot
-# download from it directly; this repo is the public mirror.
+# serves the latest complete installer set from the public source repository.
 #
 # Runs on a schedule and on demand. A version already mirrored is skipped, and a
 # SovraHarness release that does not yet have all three installers is skipped
@@ -10,7 +9,7 @@ name: Mirror latest release
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "11,41 * * * *"
   workflow_dispatch:
     inputs:
       tag:
@@ -33,17 +32,20 @@ jobs:
       - name: Mirror installers
         env:
           SOURCE_REPO: Sovra-AI/SovraHarness
-          SOURCE_TOKEN: ${{ secrets.SOVRA_BUILD_TOKEN }}
           GH_TOKEN: ${{ github.token }}
           INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          src() { GH_TOKEN="$SOURCE_TOKEN" gh "$@"; }
+          publish() {
+            # A manual backfill of an older tag must preserve the current download.
+            local newest latest=false
+            newest=$(gh release view --repo "$SOURCE_REPO" --json tagName --jq .tagName)
+            if [[ "$tag" == "$newest" ]]; then latest=true; fi
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$latest"
+          }
 
-          tag="${INPUT_TAG:-}"
-          if [[ -z "$tag" ]]; then
-            tag=$(src release view --repo "$SOURCE_REPO" --json tagName --jq .tagName)
-          fi
+          source_latest=$(gh release view --repo "$SOURCE_REPO" --json tagName --jq .tagName)
+          tag="${INPUT_TAG:-$source_latest}"
           echo "Source release: $tag"
 
           # Site asset name  <-  source asset name
@@ -53,21 +55,28 @@ jobs:
             [SovraHarness.AppImage]=SovraHarness.AppImage
           )
 
-          src_assets=$(src release view "$tag" --repo "$SOURCE_REPO" --json assets --jq '.assets[].name')
+          src_assets=$(gh release view "$tag" --repo "$SOURCE_REPO" --json assets --jq '.assets[] | select(.state == "uploaded" and .size > 0) | .name')
           for name in "${wanted[@]}"; do
-            if ! grep -qx "$name" <<< "$src_assets"; then
+            if ! grep -Fxq -- "$name" <<< "$src_assets"; then
               echo "$tag does not have $name yet; nothing to mirror."
               exit 0
             fi
           done
 
-          if mine=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null); then
+          if mine=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets,isDraft 2>/dev/null); then
+            names=$(jq -r '.assets[] | select(.state == "uploaded" and .size > 0) | .name' <<< "$mine")
             complete=1
             for site_name in "${!wanted[@]}"; do
-              grep -qx "$site_name" <<< "$mine" || complete=0
+              grep -Fxq -- "$site_name" <<< "$names" || complete=0
             done
             if [[ "$complete" == "1" ]]; then
-              echo "$tag is already mirrored."
+              if [[ "$(jq -r .isDraft <<< "$mine")" == true ]]; then
+                publish
+              elif [[ "$tag" == "$source_latest" ]]; then
+                site_latest=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+                if [[ "$site_latest" != "$tag" ]]; then publish; fi
+              fi
+              echo "$tag is mirrored."
               exit 0
             fi
           else
@@ -79,7 +88,7 @@ jobs:
 
           mkdir -p dl
           for site_name in "${!wanted[@]}"; do
-            src release download "$tag" --repo "$SOURCE_REPO" --pattern "${wanted[$site_name]}" --dir dl --clobber
+            gh release download "$tag" --repo "$SOURCE_REPO" --pattern "${wanted[$site_name]}" --dir dl --clobber
             if [[ "$site_name" != "${wanted[$site_name]}" ]]; then
               mv "dl/${wanted[$site_name]}" "dl/$site_name"
             fi
@@ -89,5 +98,5 @@ jobs:
 
           # Publish and mark latest only once all three are attached, so the
           # site never points at a half-uploaded release.
-          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          publish
           gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[]|{name,size}'
