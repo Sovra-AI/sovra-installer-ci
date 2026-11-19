@@ -7,8 +7,9 @@ Source never lives in this repository. Jobs check out `Sovra-AI/SovraHarness`
 with `SOVRA_BUILD_TOKEN` and upload `.pkg` / Setup `.exe` / `.AppImage` to that
 repo’s GitHub Release.
 
-The download site uses this repository's latest release. **Mirror latest release**
-checks the public SovraHarness releases twice an hour. It publishes a draft after
+The download site now links directly to the official SovraHarness release. Existing
+mirror download links remain available here. **Mirror latest release** is scheduled
+to check the public SovraHarness releases twice an hour. It publishes a draft after
 all three installers are uploaded and resumes interrupted drafts on the next run.
 It reads releases with the workflow's own GitHub token.
 

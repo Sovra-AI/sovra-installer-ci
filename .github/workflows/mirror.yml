@@ -1,6 +1,5 @@
-# Copies the newest SovraHarness release's installers into this public repo so
-# the download site (which links to .../releases/latest/download/...) always
-# serves the latest complete installer set from the public source repository.
+# Copies the newest SovraHarness installers here for existing mirror links.
+# The download site follows the official SovraHarness release directly.
 #
 # Runs on a schedule and on demand. A version already mirrored is skipped, and a
 # SovraHarness release that does not yet have all three installers is skipped
